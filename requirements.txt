@@ -1,0 +1,11 @@
+streamlit
+openai
+python-dotenv
+pandas
+pillow
+pillow-heif
+pypdf
+pydub
+moviepy
+supabase
+openpyxl
