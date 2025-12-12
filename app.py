@@ -109,8 +109,7 @@ if 'result_data' not in st.session_state:
 MAX_MEDIA_MS = 2 * 60 * 60 * 1000  # 2시간
 MAX_PDF_CHUNK_SIZE = 15000         # PDF 청크 크기
 
-MAX_IMAGES_BASIC = 50
-MAX_IMAGES_PRO = 120
+MAX_IMAGES_PRO = 100
 MAX_IMAGE_DIMENSION = 1024 # 이미지 분석 시 리사이즈 제한 (비용 절감 및 속도)
 DEFAULT_BATCH_SIZE = 5     # 배치 사이즈
 MAX_ZIP_SIZE_MB = 200      # ZIP 다운로드 용량 제한
@@ -580,24 +579,25 @@ def analyze_transcript_with_gpt(transcript_text, chunk_info=""):
 # =====================================
 # 통합 분석 실행 함수 (Dependency Check & 병렬 처리)
 # =====================================
-def run_analysis(imgs, audio, video, pdf, plan_type):
+def run_analysis(imgs, audio, video, pdf, plan_type="pro"):
     final_data = []
-    
-    if plan_type == "Basic" and imgs and len(imgs) > MAX_IMAGES_BASIC:
-        st.error(f"🚫 Basic 요금제는 이미지 {MAX_IMAGES_BASIC}장 제한입니다.")
-        return []
-    if plan_type == "Pro" and imgs and len(imgs) > MAX_IMAGES_PRO:
-        st.warning(f"⚠️ 이미지가 많아 상위 {MAX_IMAGES_PRO}장만 분석합니다.")
-        imgs = imgs[:MAX_IMAGES_PRO]
 
-    # 1. 비디오 처리
+    # 요금제에 따른 이미지 제한 (지금은 Pro만 쓰는 구조라면 pro 고정)
+    max_images = MAX_IMAGES_PRO if str(plan_type).lower().startswith("pro") else 20
+
+    # 0) 이미지 제한
+    if imgs and len(imgs) > max_images:
+        st.warning(f"⚠️ 이미지가 많아 상위 {max_images}장만 분석합니다.")
+        imgs = imgs[:max_images]
+
+    # 1) 비디오 처리
     if video:
         if not HAS_MOVIEPY:
             st.error("🚫 서버에 'moviepy'가 설치되지 않아 영상 분석을 건너뜁니다.")
         else:
             with st.spinner("🎬 영상 처리 중..."):
                 audio_path = extract_audio_from_video(video)
-                if audio_path: 
+                if audio_path:
                     text_chunks = process_audio_file(audio_path)
                     if text_chunks:
                         total_chunks = len(text_chunks)
@@ -606,20 +606,22 @@ def run_analysis(imgs, audio, video, pdf, plan_type):
                             data = analyze_transcript_with_gpt(chunk_text, chunk_info).get("messages", [])
                             for item in data:
                                 item = normalize_message_item(item)
-                                item['source'] = '영상파일'
-                                item['filename'] = video.name
-                                if not item.get('context'): item['context'] = '영상 녹취'
+                                item["source"] = "영상파일"
+                                item["filename"] = video.name
+                                if not item.get("context"):
+                                    item["context"] = "영상 녹취"
                             final_data.extend(data)
-                    
-                    if os.path.exists(audio_path): os.remove(audio_path)
 
-    # 2. 오디오 처리
+                    if os.path.exists(audio_path):
+                        os.remove(audio_path)
+
+    # 2) 오디오 처리
     if audio:
         if not HAS_PYDUB:
             st.error("🚫 서버에 'pydub'이 설치되지 않아 오디오 분석을 건너뜁니다.")
         else:
             with st.spinner("🎙️ 녹음 분석 중..."):
-                text_chunks = process_audio_file(audio) 
+                text_chunks = process_audio_file(audio)
                 if text_chunks:
                     total_chunks = len(text_chunks)
                     for i, chunk_text in enumerate(text_chunks):
@@ -627,29 +629,30 @@ def run_analysis(imgs, audio, video, pdf, plan_type):
                         data = analyze_transcript_with_gpt(chunk_text, chunk_info).get("messages", [])
                         for item in data:
                             item = normalize_message_item(item)
-                            item['source'] = '녹음파일'
-                            item['filename'] = audio.name
-                            if not item.get('context'): item['context'] = '통화 녹음'
+                            item["source"] = "녹음파일"
+                            item["filename"] = audio.name
+                            if not item.get("context"):
+                                item["context"] = "통화 녹음"
                         final_data.extend(data)
                 else:
                     st.warning(f"⚠️ 녹음파일 '{audio.name}'에서 대화를 인식하지 못했습니다.")
 
-    # 3. 이미지 처리 (병렬)
+    # 3) 이미지 처리 (병렬)
     if imgs:
         batch_size = DEFAULT_BATCH_SIZE
         total_files = len(imgs)
         batch_indices = range(0, total_files, batch_size)
         total_batches = len(batch_indices)
-        
+
         pbar = st.progress(0)
         status = st.empty()
-        
+
         max_concurrent_workers = 3
-        
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent_workers) as executor:
             futures = set()
             file_pointer = 0
-            
+
             while file_pointer < total_files or futures:
                 while len(futures) < max_concurrent_workers and file_pointer < total_files:
                     current_batch_files = imgs[file_pointer:file_pointer + batch_size]
@@ -657,71 +660,73 @@ def run_analysis(imgs, audio, video, pdf, plan_type):
                     for f in current_batch_files:
                         f.seek(0)
                         batch_data.append((f.name, f.read()))
-                    
-                    # =========================================================
-                    # [수정 2/3] batch_start_index 전달 (업로드 인덱스 보존용)
-                    # =========================================================
+
                     batch_start_index = file_pointer
                     fut = executor.submit(analyze_image_batch_worker, batch_data, OPENAI_KEY, batch_start_index)
                     futures.add(fut)
                     file_pointer += batch_size
-                
+
                 if futures:
                     done, _ = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
                     for fut in done:
                         futures.remove(fut)
                         try:
-                            res_data, res_failed = fut.result()
+                            res_data, _ = fut.result()
                             final_data.extend(res_data)
                         except Exception as e:
                             print(f"Worker Exception: {e}")
-                    
+
                     processed_batches = (file_pointer // batch_size) - len(futures)
                     processed_batches = max(processed_batches, 0)
                     progress_val = min(processed_batches / max(total_batches, 1), 1.0)
                     pbar.progress(progress_val)
                     status.text(f"📷 이미지 분석 중... ({processed_batches}/{total_batches} 배치)")
-        
+
         pbar.empty()
         status.empty()
 
-    # 4. PDF 처리
+    # 4) PDF 처리
     if pdf:
         if not HAS_PYPDF:
             st.error("🚫 서버에 'pypdf'가 설치되지 않아 PDF 분석을 건너뜁니다.")
         else:
             with st.spinner("📚 PDF 분석 중..."):
                 try:
+                    pdf.seek(0)  # 중요: 포인터 복구
                     reader = PdfReader(pdf)
                     full_text = ""
                     for page in reader.pages:
                         full_text += (page.extract_text() or "")
-                    
+
                     if not full_text.strip() or len(full_text.strip()) < 50:
-                        st.warning(f"⚠️ 문서 '{pdf.name}'에서 텍스트를 거의 추출하지 못했습니다. 스캔본(이미지)일 가능성이 높습니다.")
+                        st.warning(f"⚠️ 문서 '{pdf.name}'에서 텍스트를 거의 추출하지 못했습니다. 스캔본(이미지)일 수 있습니다.")
                     else:
                         text_len = len(full_text)
                         chunk_size = MAX_PDF_CHUNK_SIZE
-                        chunks = [full_text[i:i+chunk_size] for i in range(0, text_len, chunk_size)]
+                        chunks = [full_text[i:i + chunk_size] for i in range(0, text_len, chunk_size)]
                         total_chunks = len(chunks)
-                        
+
                         progress_text = st.empty()
                         for i, chunk in enumerate(chunks):
                             progress_text.text(f"📚 PDF 분석 중... ({i+1}/{total_chunks} 구간)")
                             page_info = f"전체 {total_chunks}구간 중 {i+1}번째 구간"
-                            
+
                             data = analyze_pdf_chunk(chunk, page_info).get("messages", [])
                             for item in data:
                                 item = normalize_message_item(item)
-                                item['source'] = 'PDF문서'
-                                item['filename'] = pdf.name
-                                if not item.get('context'): item['context'] = '문서 내용'
+                                item["source"] = "PDF문서"
+                                item["filename"] = pdf.name
+                                if not item.get("context"):
+                                    item["context"] = "문서 내용"
                             final_data.extend(data)
+
                         progress_text.empty()
-                            
-                except Exception as e: st.error(f"PDF 오류: {e}")
+
+                except Exception as e:
+                    st.error(f"PDF 오류: {e}")
 
     return final_data
+
 
 # =====================================
 # 5) 증거 ZIP 로직
@@ -1081,10 +1086,11 @@ def main_app():
             st.session_state['is_dark_mode'] = mode
             st.rerun()
 
-        st.markdown("---")
-        st.header("요금제 선택")
-        plan = st.radio("사용할 요금제를 선택하세요:", ("Basic (19,900원)", "Pro (29,900원)"))
-        
+        st.header("요금제")
+        st.info("Pro 요금제: 월 59,900원")
+        plan_code = "pro"
+
+
         st.markdown("---")
         if st.button("🗑️ 분석 초기화", use_container_width=True):
             st.session_state.result_data = []
@@ -1115,35 +1121,32 @@ def main_app():
 
     with tab1:
         imgs_in, audio_in, video_in, pdf_in = None, None, None, None
-        
-        if plan == "Basic (19,900원)":
-            st.info("📜 **Basic**: 이미지(50장) + PDF 문서")
-            c1, c2 = st.columns(2)
-            with c1: imgs_in = st.file_uploader("1. SNS 스크린샷", type=['png', 'jpg', 'jpeg', 'heic'], accept_multiple_files=True, key="b_img")
-            with c2: pdf_in = st.file_uploader("2. 증거 문서", type=['pdf'], key="b_pdf")
-            st.warning("🔒 녹음/영상 분석은 Pro 요금제 전용입니다.")
-        else:
-            st.success("💎 **Pro**: 모든 기능 무제한 (녹음/영상 포함)")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("### 📷 이미지 / 🎤 녹음")
-                imgs_in = st.file_uploader("1. SNS 스크린샷", type=['png', 'jpg', 'jpeg', 'heic'], accept_multiple_files=True, key="p_img")
-                audio_in = st.file_uploader("3. 녹음 파일", type=['mp3', 'm4a', 'wav'], key="p_audio")
-            with c2:
-                st.markdown("### 📄 문서 / 🎬 영상")
-                pdf_in = st.file_uploader("2. 증거 문서", type=['pdf'], key="p_pdf")
-                video_in = st.file_uploader("4. 영상 파일", type=['mp4', 'avi'], key="p_video")
+
+        st.success("💎 **Pro**: 모든 기능 무제한 (녹음/영상 포함)")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("### 📷 이미지 / 🎤 녹음")
+            imgs_in = st.file_uploader("1. SNS 스크린샷", type=['png', 'jpg', 'jpeg', 'heic'], accept_multiple_files=True, key="p_img")
+            audio_in = st.file_uploader("3. 녹음 파일", type=['mp3', 'm4a', 'wav'], key="p_audio")
+
+        with c2:
+            st.markdown("### 📄 문서 / 🎬 영상")
+            pdf_in = st.file_uploader("2. 증거 문서", type=['pdf'], key="p_pdf")
+            video_in = st.file_uploader("4. 영상 파일", type=['mp4', 'avi'], key="p_video")
 
         st.write("")
         if st.button("통합 분석 시작 🚀", type="primary"):
             if not any([imgs_in, audio_in, video_in, pdf_in]):
                 st.warning("파일을 하나라도 올려주세요.")
             else:
-                plan_code = "Pro" if "Pro" in plan else "Basic"
                 res = run_analysis(imgs_in, audio_in, video_in, pdf_in, plan_code)
                 st.session_state.result_data = res
-                if res: st.toast('분석 완료! 결과 탭을 확인하세요.', icon='✅')
-                else: st.toast('분석 결과가 없습니다.', icon='⚠️')
+                if res:
+                    st.toast('분석 완료! 결과 탭을 확인하세요.', icon='✅')
+                else:
+                    st.toast('분석 결과가 없습니다.', icon='⚠️')
+
 
     with tab2:
         if 'result_data' in st.session_state and st.session_state.result_data:
