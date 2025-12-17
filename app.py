@@ -198,39 +198,36 @@ def optimize_image_bytes(image_bytes: bytes):
 
             w, h = img.size
             
-            # [수정] 긴 스크린샷 대응 로직: 
-            # 세로(h)가 아무리 길어도, 가로(w)가 1024px 이하라면 리사이즈 하지 않음 (화질 유지)
-            # 가로가 너무 클 때만 줄여서 AI 토큰 비용 절약
-            
-            # 기준: 가로가 2048보다 크면 줄임, 아니면 원본 유지
+            # [디버깅] 이미지 크기 로그 출력
+            print(f"📸 이미지 처리 시작: 원본 크기 {w}x{h}")
+
+            # 리사이즈 로직 (가로 2048 기준)
             if w > 2048:
                 scale = 2048 / w
                 new_w = int(w * scale)
                 new_h = int(h * scale)
                 img = img.resize((new_w, new_h), RESAMPLING_METHOD)
-            
-            # (옵션) 하지만 높이가 OpenAI 제한(약 10,000~15,000px)을 넘어가면 오류가 날 수 있으므로
-            # 극단적으로 긴 이미지는 반으로 자르는 등의 처리가 필요하지만,
-            # 우선은 높이 제한을 넉넉하게 8000으로 둠
             elif h > 8000:
-                # 가로폭이 충분하다면 높이만 줄이는 건 비율 깨짐 -> 비율 유지하며 줄임
                 scale = 8000 / h
-                # 단, 이렇게 줄였을 때 가로가 너무 작아지면(600px 미만) 안 줄임
                 if (w * scale) > 600:
                     new_w = int(w * scale)
                     new_h = int(h * scale)
                     img = img.resize((new_w, new_h), RESAMPLING_METHOD)
 
             buffer = io.BytesIO()
-            # 텍스트 선명도를 위해 품질 100 설정
-            img.save(buffer, format="JPEG", quality=85)
-            return base64.b64encode(buffer.getvalue()).decode("utf-8")
+            img.save(buffer, format="JPEG", quality=100)
+            encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+            
+            # [디버깅] 변환 성공 여부
+            if len(encoded) > 0:
+                return encoded
+            else:
+                st.warning(f"⚠️ 이미지 변환 결과가 비어있습니다. ({w}x{h})")
+                return None
 
-    except Image.DecompressionBombError:
-        print("Image too large (DecompressionBomb)")
-        return None
     except Exception as e:
-        print(f"Optimize Error: {e}")
+        # [화면 출력] 이미지 처리 중 에러 발생 시 띄우기
+        st.error(f"❌ 이미지 처리 중 오류 발생: {e}")
         return None
 
 # =========================================================
@@ -276,23 +273,19 @@ def normalize_message_item(item: dict) -> dict:
     return item
 
 def call_chat_json_robust(api_key, messages, max_tokens=DEFAULT_MAX_TOKENS):
-    """
-    GPT 호출 안전 래퍼: 4o(Schema) -> 4o-mini(Schema) -> 4o(JSON) 폴백 전략
-    [수정] max_tokens 기본값을 DEFAULT_MAX_TOKENS(2048)로 변경
-    """
     local_client = OpenAI(api_key=api_key)
     
+    # [디버깅] 전략을 하나로 단순화해서 에러를 확실히 잡기 (4o-mini로 테스트)
     strategies = [
-        ("gpt-4o-2024-08-06", TIMELINE_SCHEMA),
-        ("gpt-4o-mini", TIMELINE_SCHEMA),
-        ("gpt-4o", {"type": "json_object"})
+        ("gpt-4o", TIMELINE_SCHEMA),      # 메인 모델
+        ("gpt-4o-mini", TIMELINE_SCHEMA)  # 백업 모델
     ]
 
     last_error = None
     
     for model, resp_format in strategies:
         retries = 0
-        while retries <= 2:
+        while retries <= 1: # 재시도 횟수 줄임
             try:
                 response = local_client.chat.completions.create(
                     model=model,
@@ -302,22 +295,30 @@ def call_chat_json_robust(api_key, messages, max_tokens=DEFAULT_MAX_TOKENS):
                     response_format=resp_format
                 )
                 content = response.choices[0].message.content
+                
+                # [디버깅 로그] AI가 뱉은 원본 텍스트가 비어있는지 확인
+                if not content:
+                    print(f"⚠️ [모델 {model}] 응답 내용이 비어있음!")
+                    continue
+
                 data = safe_json_loads(content)
+                
+                # JSON 파싱 성공 여부 확인
                 if "messages" in data:
                     return data
-                raise ValueError("JSON Key 'messages' not found")
-            except (RateLimitError, APIConnectionError):
-                retries += 1
-                time.sleep(2 + random.random())
-            except BadRequestError:
-                # 스키마 미지원 등의 이유로 실패 시 다음 전략으로
-                break
+                else:
+                    # JSON은 나왔는데 messages 키가 없는 경우
+                    print(f"⚠️ [모델 {model}] JSON 키 누락: {content[:100]}...")
+                    raise ValueError("JSON Key 'messages' not found")
+
             except Exception as e:
                 retries += 1
                 last_error = e
+                print(f"❌ [API Error] {model} / 시도 {retries}: {e}")
                 time.sleep(1)
     
-    print(f"[API Failed] Last Error: {last_error}")
+    # [화면 출력] 최종 실패 시, 왜 실패했는지 브라우저 화면에 띄우기
+    st.error(f"🚫 AI 분석 실패 (최종 에러): {last_error}")
     return {"messages": []}
 
 def transcribe_audio_chunk(file_path):
