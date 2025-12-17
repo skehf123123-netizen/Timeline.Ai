@@ -125,7 +125,7 @@ TIMELINE_SCHEMA = {
     "type": "json_schema",
     "json_schema": {
         "name": "timeline_response",
-        "strict": True,
+        "strict": False,
         "schema": {
             "type": "object",
             "properties": {
@@ -197,31 +197,35 @@ def optimize_image_bytes(image_bytes: bytes):
                 img = img.convert("RGB")
 
             w, h = img.size
-            # [수정] 긴 이미지(스크롤 캡처) 대응 로직
-            # 긴 변이 제한을 넘더라도, 짧은 변이 너무 작아지지 않도록 방어
-            max_dim = MAX_IMAGE_DIMENSION
             
-            # 이미지가 너무 크면 리사이즈하되, 텍스트 가독성 유지
-            if max(w, h) > max_dim:
-                # 만약 세로로 매우 긴 이미지라면(비율 1:3 이상), 
-                # 가로폭이 최소 800px은 유지되도록 스케일 조정 (글자 뭉개짐 방지)
-                if h > w * 3 and w > 800:
-                     scale = 1.0 # 리사이즈 안함 (OpenAI가 알아서 처리하도록 둠)
-                     # 너무 거대하면 OpenAI 용량 제한 걸리므로 적당히만 줄임
-                     if h > 4000: 
-                         scale = 4000 / h
-                else:
-                    scale = max_dim / max(w, h)
-                
-                if scale < 1.0:
+            # [수정] 긴 스크린샷 대응 로직: 
+            # 세로(h)가 아무리 길어도, 가로(w)가 1024px 이하라면 리사이즈 하지 않음 (화질 유지)
+            # 가로가 너무 클 때만 줄여서 AI 토큰 비용 절약
+            
+            # 기준: 가로가 2048보다 크면 줄임, 아니면 원본 유지
+            if w > 2048:
+                scale = 2048 / w
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                img = img.resize((new_w, new_h), RESAMPLING_METHOD)
+            
+            # (옵션) 하지만 높이가 OpenAI 제한(약 10,000~15,000px)을 넘어가면 오류가 날 수 있으므로
+            # 극단적으로 긴 이미지는 반으로 자르는 등의 처리가 필요하지만,
+            # 우선은 높이 제한을 넉넉하게 8000으로 둠
+            elif h > 8000:
+                # 가로폭이 충분하다면 높이만 줄이는 건 비율 깨짐 -> 비율 유지하며 줄임
+                scale = 8000 / h
+                # 단, 이렇게 줄였을 때 가로가 너무 작아지면(600px 미만) 안 줄임
+                if (w * scale) > 600:
                     new_w = int(w * scale)
                     new_h = int(h * scale)
                     img = img.resize((new_w, new_h), RESAMPLING_METHOD)
 
             buffer = io.BytesIO()
-            # 품질을 85 -> 90으로 상향하여 텍스트 선명도 확보
-            img.save(buffer, format="JPEG", quality=90) 
+            # 텍스트 선명도를 위해 품질 100 설정
+            img.save(buffer, format="JPEG", quality=100)
             return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
     except Image.DecompressionBombError:
         print("Image too large (DecompressionBomb)")
         return None
