@@ -223,7 +223,7 @@ def optimize_image_bytes(image_bytes: bytes):
 
             buffer = io.BytesIO()
             # 텍스트 선명도를 위해 품질 100 설정
-            img.save(buffer, format="JPEG", quality=100)
+            img.save(buffer, format="JPEG", quality=85)
             return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
     except Image.DecompressionBombError:
