@@ -111,7 +111,7 @@ MAX_PDF_CHUNK_SIZE = 15000         # PDF 청크 크기
 
 MAX_IMAGES_PRO = 100
 MAX_IMAGE_DIMENSION = 3072 # 이미지 분석 시 리사이즈 제한 (비용 절감 및 속도)
-DEFAULT_BATCH_SIZE = 5     # 배치 사이즈
+DEFAULT_BATCH_SIZE = 3     # 배치 사이즈
 MAX_ZIP_SIZE_MB = 200      # ZIP 다운로드 용량 제한
 DEFAULT_MAX_TOKENS = 2048  # [수정] 기본 토큰 수 제한 하향
 
