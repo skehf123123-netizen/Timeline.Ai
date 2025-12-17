@@ -110,13 +110,16 @@ MAX_MEDIA_MS = 2 * 60 * 60 * 1000  # 2시간
 MAX_PDF_CHUNK_SIZE = 15000         # PDF 청크 크기
 
 MAX_IMAGES_PRO = 100
-MAX_IMAGE_DIMENSION = 1024 # 이미지 분석 시 리사이즈 제한 (비용 절감 및 속도)
+MAX_IMAGE_DIMENSION = 3072 # 이미지 분석 시 리사이즈 제한 (비용 절감 및 속도)
 DEFAULT_BATCH_SIZE = 5     # 배치 사이즈
 MAX_ZIP_SIZE_MB = 200      # ZIP 다운로드 용량 제한
 DEFAULT_MAX_TOKENS = 2048  # [수정] 기본 토큰 수 제한 하향
 
 # =========================================================
 # [수정 1/3] 스키마: 날짜/시간/타임스탬프 "미확인" 허용
+# =========================================================
+# =========================================================
+# [수정] 스키마: Pattern(정규식) 제거 -> AI가 자유롭게 추출 후 후처리
 # =========================================================
 TIMELINE_SCHEMA = {
     "type": "json_schema",
@@ -131,19 +134,10 @@ TIMELINE_SCHEMA = {
                     "items": {
                         "type": "object",
                         "properties": {
-                            # "미확인" 또는 정규 포맷 허용
-                            "timestamp": {
-                                "type": "string",
-                                "pattern": "^(미확인|\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2})$"
-                            },
-                            "date": {
-                                "type": "string",
-                                "pattern": "^(미확인|\\d{4}-\\d{2}-\\d{2})$"
-                            },
-                            "time": {
-                                "type": "string",
-                                "pattern": "^(미확인|\\d{2}:\\d{2}:\\d{2})$"
-                            },
+                            # pattern 정규식 제약 제거 (AI가 자유롭게 텍스트 추출 가능하게 함)
+                            "timestamp": {"type": "string"}, 
+                            "date": {"type": "string"},
+                            "time": {"type": "string"},
                             "context": {"type": "string"},
                             "sender": {"type": "string"},
                             "content": {"type": "string"},
@@ -203,15 +197,30 @@ def optimize_image_bytes(image_bytes: bytes):
                 img = img.convert("RGB")
 
             w, h = img.size
-            if max(w, h) > MAX_IMAGE_DIMENSION:
-                scale = MAX_IMAGE_DIMENSION / max(w, h)
-                img = img.resize(
-                    (int(w * scale), int(h * scale)),
-                    RESAMPLING_METHOD
-                )
+            # [수정] 긴 이미지(스크롤 캡처) 대응 로직
+            # 긴 변이 제한을 넘더라도, 짧은 변이 너무 작아지지 않도록 방어
+            max_dim = MAX_IMAGE_DIMENSION
+            
+            # 이미지가 너무 크면 리사이즈하되, 텍스트 가독성 유지
+            if max(w, h) > max_dim:
+                # 만약 세로로 매우 긴 이미지라면(비율 1:3 이상), 
+                # 가로폭이 최소 800px은 유지되도록 스케일 조정 (글자 뭉개짐 방지)
+                if h > w * 3 and w > 800:
+                     scale = 1.0 # 리사이즈 안함 (OpenAI가 알아서 처리하도록 둠)
+                     # 너무 거대하면 OpenAI 용량 제한 걸리므로 적당히만 줄임
+                     if h > 4000: 
+                         scale = 4000 / h
+                else:
+                    scale = max_dim / max(w, h)
+                
+                if scale < 1.0:
+                    new_w = int(w * scale)
+                    new_h = int(h * scale)
+                    img = img.resize((new_w, new_h), RESAMPLING_METHOD)
 
             buffer = io.BytesIO()
-            img.save(buffer, format="JPEG", quality=85)
+            # 품질을 85 -> 90으로 상향하여 텍스트 선명도 확보
+            img.save(buffer, format="JPEG", quality=90) 
             return base64.b64encode(buffer.getvalue()).decode("utf-8")
     except Image.DecompressionBombError:
         print("Image too large (DecompressionBomb)")
@@ -493,12 +502,15 @@ def process_audio_file(file_obj_or_path):
 def analyze_image_batch_worker(batch_data, api_key, batch_start_index: int):
     system_prompt = f"""
     당신은 법원에 제출할 증거자료를 분석하는 '디지털 포렌식 전문가'입니다.
+    이 내용은 SNS 대화기록입니다.
     
     [핵심 원칙]
-    1. 원문 유지: 오타, 비속어, 이모티콘 텍스트를 수정하지 말고 그대로 전사하십시오.
+    1. 원문 유지: 대화 내용을 빠짐없이 전사하십시오. (날짜/시간 표시 포함) 오타, 비속어, 이모티콘 텍스트를 수정하지 말고 그대로 전사하십시오.
     2. 객관성: 추측성 내용은 배제하고 "[판독불가]"로 표기하십시오.
     3. 시간 정보: 이미지 내 시간 정보를 최우선으로 하되, 없거나 불명확하면 "미확인"으로 표기하고 is_estimated=true로 표시하십시오.
-    
+    4. 화면 상단이나 중간에 있는 "202x년 x월 x일" 같은 날짜 정보를 놓치지 마십시오.
+    3. 시간(오전/오후) 정보가 보이면 24시간제로 변환하여 timestamp에 기록하십시오.
+    4. 발신자(sender) 이름이 없으면 말풍선 위치(노란색: 나, 흰색: 상대방)를 보고 판단하여 '나' 또는 '상대방'으로 적으십시오.
     {COMMON_SCHEMA_INSTRUCTION}
     """
     
