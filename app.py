@@ -227,7 +227,7 @@ def optimize_image_bytes(image_bytes: bytes):
 
     except Exception as e:
         # [화면 출력] 이미지 처리 중 에러 발생 시 띄우기
-        st.error(f"❌ 이미지 처리 중 오류 발생: {e}")
+        print(f"❌ 이미지 처리 중 오류 발생: {e}")
         return None
 
 # =========================================================
@@ -318,7 +318,7 @@ def call_chat_json_robust(api_key, messages, max_tokens=DEFAULT_MAX_TOKENS):
                 time.sleep(1)
     
     # [화면 출력] 최종 실패 시, 왜 실패했는지 브라우저 화면에 띄우기
-    st.error(f"🚫 AI 분석 실패 (최종 에러): {last_error}")
+                print(f"🚫 AI 분석 실패 (최종 에러): {last_error}")
     return {"messages": []}
 
 def transcribe_audio_chunk(file_path):
@@ -664,7 +664,7 @@ def run_analysis(imgs, audio, video, pdf, plan_type="pro"):
         pbar = st.progress(0)
         status = st.empty()
 
-        max_concurrent_workers = 3
+        max_concurrent_workers = 2
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent_workers) as executor:
             futures = set()
