@@ -6,6 +6,6 @@ pillow
 pillow-heif
 pypdf
 pydub
-moviepy
+moviepy<2.0.0
 supabase
 openpyxl
